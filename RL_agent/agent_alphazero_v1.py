@@ -1,5 +1,4 @@
 import math, os, time, sys, traceback, importlib.util
-from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -132,35 +131,52 @@ except Exception:
 # Data structures
 # ============================================================
 
-@dataclass(frozen=True)
 class Action:
-    src_idx: int
-    tgt_idx: int
-    ships: int
-    heuristic: float
-    pass_action: bool = False
+    __slots__ = ("src_idx", "tgt_idx", "ships", "heuristic", "pass_action")
+
+    def __init__(self, src_idx, tgt_idx, ships, heuristic, pass_action=False):
+        self.src_idx = _safe_int(src_idx, -1)
+        self.tgt_idx = _safe_int(tgt_idx, -1)
+        self.ships = _safe_int(ships, 0)
+        self.heuristic = _safe_float(heuristic, 0.0)
+        self.pass_action = bool(pass_action)
 
 
-@dataclass
 class State:
-    owners: np.ndarray
-    ships: np.ndarray
-    current_player: int
-    step: int
+    __slots__ = ("owners", "ships", "current_player", "step")
+
+    def __init__(self, owners, ships, current_player, step):
+        self.owners = owners
+        self.ships = ships
+        self.current_player = _safe_int(current_player, 0)
+        self.step = _safe_int(step, 0)
 
 
-@dataclass
 class Node:
-    state: State
-    parent: "Node | None" = None
-    action_from_parent: Action | None = None
-    prior_from_parent: float = 1.0
-    visit_count: int = 0
-    value_sum: float = 0.0
-    expanded: bool = False
-    actions: list = field(default_factory=list)
-    priors: list = field(default_factory=list)
-    children: dict = field(default_factory=dict)  # action_index -> Node
+    __slots__ = (
+        "state",
+        "parent",
+        "action_from_parent",
+        "prior_from_parent",
+        "visit_count",
+        "value_sum",
+        "expanded",
+        "actions",
+        "priors",
+        "children",
+    )
+
+    def __init__(self, state, parent=None, action_from_parent=None, prior_from_parent=1.0):
+        self.state = state
+        self.parent = parent
+        self.action_from_parent = action_from_parent
+        self.prior_from_parent = _safe_float(prior_from_parent, 1.0)
+        self.visit_count = 0
+        self.value_sum = 0.0
+        self.expanded = False
+        self.actions = []
+        self.priors = []
+        self.children = {}  # action_index -> Node
 
     def q(self):
         if self.visit_count <= 0:
