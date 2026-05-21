@@ -1,4 +1,4 @@
-import math, os, time, sys
+import math, os, time, sys, importlib.util
 
 import numpy as np
 
@@ -7,6 +7,26 @@ try:
 except Exception:
     ort = None
 
+try:
+    # Strong fallback policy for cases without ONNX model or unstable outputs.
+    from RL_agent.agent_rule_base_v2 import agent as _rule_base_v2_agent
+except Exception:
+    try:
+        from agent_rule_base_v2 import agent as _rule_base_v2_agent
+    except Exception:
+        _rule_base_v2_agent = None
+        try:
+            _base = os.path.dirname(__file__) if "__file__" in globals() else os.getcwd()
+            _fallback_path = os.path.join(_base, "agent_rule_base_v2.py")
+            if os.path.exists(_fallback_path):
+                _spec = importlib.util.spec_from_file_location("agent_rule_base_v2_fallback", _fallback_path)
+                if _spec is not None and _spec.loader is not None:
+                    _mod = importlib.util.module_from_spec(_spec)
+                    _spec.loader.exec_module(_mod)
+                    if hasattr(_mod, "agent") and callable(_mod.agent):
+                        _rule_base_v2_agent = _mod.agent
+        except Exception:
+            _rule_base_v2_agent = None
 
 # ============================================================
 # Constants
@@ -47,6 +67,7 @@ _MODEL = None
 _MODEL_INPUT_NAME = None
 _MODEL_LOAD_ERROR = None
 _MODEL_WARNING_PRINTED = False
+_FALLBACK_WARNING_PRINTED = False
 
 
 def _warn_once(msg):
@@ -54,6 +75,14 @@ def _warn_once(msg):
     if _MODEL_WARNING_PRINTED:
         return
     _MODEL_WARNING_PRINTED = True
+    print(msg, file=sys.stderr, flush=True)
+
+
+def _warn_fallback_once(msg):
+    global _FALLBACK_WARNING_PRINTED
+    if _FALLBACK_WARNING_PRINTED:
+        return
+    _FALLBACK_WARNING_PRINTED = True
     print(msg, file=sys.stderr, flush=True)
 
 
@@ -654,6 +683,19 @@ def _fallback_heuristic(world, deadline):
     return moves
 
 
+def _strong_fallback(obs, config, world, deadline):
+    # Prefer the stronger rule-based fallback if available.
+    if _rule_base_v2_agent is not None:
+        try:
+            _warn_fallback_once("[agent_PPO_v1] Using agent_rule_base_v2 fallback policy.")
+            out = _rule_base_v2_agent(obs, config)
+            if isinstance(out, list):
+                return out
+        except Exception as exc:
+            _warn_fallback_once(f"[agent_PPO_v1] rule_base_v2 fallback failed: {exc}")
+    return _fallback_heuristic(world, deadline)
+
+
 # ============================================================
 # Agent entrypoint
 # ============================================================
@@ -674,7 +716,7 @@ def agent(obs, config=None):
         # Model unavailable -> full heuristic fallback.
         session = get_model()
         if session is None:
-            return _fallback_heuristic(world, deadline)
+            return _strong_fallback(obs, config, world, deadline)
 
         moves = []
         player = world["player"]
@@ -742,6 +784,10 @@ def agent(obs, config=None):
 
             if _is_action_valid(src, angle, ships_to_send, available):
                 moves.append([src["id"], float(angle), int(ships_to_send)])
+
+        # If model produced no action at all, fallback to stronger deterministic policy.
+        if not moves:
+            return _strong_fallback(obs, config, world, deadline)
 
         return moves
 
