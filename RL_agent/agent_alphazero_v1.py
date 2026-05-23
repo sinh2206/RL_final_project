@@ -20,14 +20,14 @@ MAX_SPEED = 6.0
 ROTATION_LIMIT = 50.0
 LAUNCH_CLEARANCE = 0.1
 
-MCTS_MAX_SIMULATIONS = 64
-MCTS_MAX_DEPTH = 8
+MCTS_MAX_SIMULATIONS = 42
+MCTS_MAX_DEPTH = 6
 MCTS_C_PUCT = 1.25
 
-TOP_K_TARGETS = 4
-MAX_ACTIONS_PER_NODE = 48
+TOP_K_TARGETS = 3
+MAX_ACTIONS_PER_NODE = 28
 FINAL_MAX_ORDERS = 3
-MIN_SOURCE_SHIPS = 8
+MIN_SOURCE_SHIPS = 10
 
 OBS_DIM = 512
 MAX_PLANETS_FEAT = 28
@@ -105,26 +105,43 @@ def get_model():
         return None
 
 
-# Strong fallback policy for runtime safety.
-try:
-    from RL_agent.agent_rule_base_v2 import agent as _rule_base_v2_agent
-except Exception:
+def _load_fallback_agent(module_name, file_name, alias_name):
     try:
-        from agent_rule_base_v2 import agent as _rule_base_v2_agent
+        mod = __import__(f"RL_agent.{module_name}", fromlist=["agent"])
+        fn = getattr(mod, "agent", None)
+        if callable(fn):
+            return fn
     except Exception:
-        _rule_base_v2_agent = None
-        try:
-            _base = os.path.dirname(__file__) if "__file__" in globals() else os.getcwd()
-            _path = os.path.join(_base, "agent_rule_base_v2.py")
-            if os.path.exists(_path):
-                _spec = importlib.util.spec_from_file_location("agent_rule_base_v2_fallback_alpha", _path)
-                if _spec is not None and _spec.loader is not None:
-                    _mod = importlib.util.module_from_spec(_spec)
-                    _spec.loader.exec_module(_mod)
-                    if hasattr(_mod, "agent") and callable(_mod.agent):
-                        _rule_base_v2_agent = _mod.agent
-        except Exception:
-            _rule_base_v2_agent = None
+        pass
+
+    try:
+        mod = __import__(module_name, fromlist=["agent"])
+        fn = getattr(mod, "agent", None)
+        if callable(fn):
+            return fn
+    except Exception:
+        pass
+
+    try:
+        base = os.path.dirname(__file__) if "__file__" in globals() else os.getcwd()
+        path = os.path.join(base, file_name)
+        if os.path.exists(path):
+            spec = importlib.util.spec_from_file_location(alias_name, path)
+            if spec is not None and spec.loader is not None:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                fn = getattr(mod, "agent", None)
+                if callable(fn):
+                    return fn
+    except Exception:
+        pass
+    return None
+
+
+_rule_base_v4_agent = _load_fallback_agent("agent_rule_base_v4", "agent_rule_base_v4.py", "agent_rule_base_v4_fallback_alpha")
+_rule_base_v3_agent = _load_fallback_agent("agent_rule_base_v3", "agent_rule_base_v3.py", "agent_rule_base_v3_fallback_alpha")
+_rule_base_v2_agent = _load_fallback_agent("agent_rule_base_v2", "agent_rule_base_v2.py", "agent_rule_base_v2_fallback_alpha")
+_rule_base_v1_agent = _load_fallback_agent("agent_rule_base_v1", "agent_rule_base_v1.py", "agent_rule_base_v1_fallback_alpha")
 
 
 # ============================================================
@@ -445,8 +462,19 @@ def _action_heuristic(state, world, src_idx, tgt_idx):
     d = dist(psrc["x"], psrc["y"], ptgt["x"], ptgt["y"])
     t_owner = int(state.owners[tgt_idx])
     t_ship = float(state.ships[tgt_idx])
-    owner_bonus = 11.0 if t_owner not in (-1, state.current_player) else 7.0
-    return ptgt["production"] * 4.2 + owner_bonus - 0.11 * t_ship - 0.10 * d
+    if t_owner == state.current_player:
+        owner_bonus = 2.5 if t_ship < psrc["ships"] * 0.55 else -6.0
+        ship_penalty = 0.05
+    elif t_owner == -1:
+        owner_bonus = 8.0
+        ship_penalty = 0.10
+    else:
+        owner_bonus = 14.0
+        ship_penalty = 0.14
+
+    orbit_bonus = 0.8 if ptgt["is_orbiting"] else 0.0
+    comet_bonus = 0.4 if ptgt["is_comet"] else 0.0
+    return ptgt["production"] * 5.0 + owner_bonus + orbit_bonus + comet_bonus - ship_penalty * t_ship - 0.10 * d
 
 
 def _generate_actions(state, world, deadline):
@@ -455,7 +483,13 @@ def _generate_actions(state, world, deadline):
     ships = state.ships
 
     source_idxs = [i for i in range(len(owners)) if owners[i] == player and ships[i] >= MIN_SOURCE_SHIPS]
+    source_idxs.sort(key=lambda i: (ships[i], world["production"][i]), reverse=True)
+    source_idxs = source_idxs[: min(6, len(source_idxs))]
+
     target_idxs = [i for i in range(len(owners)) if owners[i] != player]
+    weak_owned = [i for i in range(len(owners)) if owners[i] == player]
+    weak_owned.sort(key=lambda i: (ships[i] - world["production"][i] * 1.5))
+    target_idxs.extend(weak_owned[:2])
     actions = []
 
     for sidx in source_idxs:
@@ -480,16 +514,17 @@ def _generate_actions(state, world, deadline):
             takeover_need = int(t_ships + 1 + (world["planets"][tidx]["production"] * eta_rough * (0.6 if t_owner != -1 else 0.2)))
 
             send_candidates = {
-                max(1, int(avail * 0.25)),
-                max(1, int(avail * 0.45)),
-                max(1, int(avail * 0.65)),
+                max(1, int(avail * 0.30)),
+                max(1, int(avail * 0.50)),
                 max(1, takeover_need),
             }
+            if t_owner == player:
+                send_candidates.add(max(1, int(avail * 0.36)))
             for send in send_candidates:
                 send = min(send, max(1, avail - 1))
                 if send <= 0:
                     continue
-                h = _action_heuristic(state, world, sidx, tidx) + min(send, takeover_need) * 0.015
+                h = _action_heuristic(state, world, sidx, tidx) + min(send, takeover_need) * 0.018
                 actions.append(Action(src_idx=sidx, tgt_idx=tidx, ships=int(send), heuristic=h, pass_action=False))
                 if len(actions) >= MAX_ACTIONS_PER_NODE:
                     break
@@ -725,18 +760,42 @@ def _select_child(node):
     return best_i
 
 
+def _simulation_budget(world, state, deadline):
+    remaining = max(0.0, deadline - time.perf_counter())
+    if remaining <= EARLY_EXIT_BUFFER + 0.10:
+        return 8
+
+    my_count = int(np.sum(state.owners == state.current_player))
+    total_planets = max(1, len(world["planets"]))
+    density = total_planets / 24.0
+
+    base = MCTS_MAX_SIMULATIONS
+    if my_count >= 8:
+        base -= 12
+    elif my_count <= 3:
+        base += 4
+    base = int(base / max(1.0, density))
+    base = max(14, min(MCTS_MAX_SIMULATIONS, base))
+
+    # Hard cap by remaining time.
+    time_cap = int(remaining / 0.010)
+    return max(8, min(base, time_cap))
+
+
 def mcts_search(world, root_state, deadline):
     root = Node(state=root_state)
     _expand_node(root, world, deadline)
     simulations = 0
+    budget = _simulation_budget(world, root_state, deadline)
+    max_depth = 5 if len(world["planets"]) >= 22 else MCTS_MAX_DEPTH
 
-    while simulations < MCTS_MAX_SIMULATIONS and time.perf_counter() < deadline - EARLY_EXIT_BUFFER:
+    while simulations < budget and time.perf_counter() < deadline - EARLY_EXIT_BUFFER:
         node = root
         path = [node]
 
         # Selection
         depth = 0
-        while node.expanded and node.actions and depth < MCTS_MAX_DEPTH:
+        while node.expanded and node.actions and depth < max_depth:
             if time.perf_counter() >= deadline - EARLY_EXIT_BUFFER:
                 break
             aidx = _select_child(node)
@@ -815,13 +874,25 @@ def _dangerous_comet_on_path(world, state, src, target, tx, ty, eta, send):
 
 
 def _strong_fallback(obs, config):
-    if _rule_base_v2_agent is None:
-        return []
-    try:
-        _warn_fallback_once("[agent_alphazero_v1] Using rule_base_v2 fallback.")
-        return _rule_base_v2_agent(obs, config)
-    except Exception:
-        return []
+    for name, fn in (
+        ("rule_base_v1", _rule_base_v1_agent),
+        ("rule_base_v4", _rule_base_v4_agent),
+        ("rule_base_v3", _rule_base_v3_agent),
+        ("rule_base_v2", _rule_base_v2_agent),
+    ):
+        if fn is None:
+            continue
+        try:
+            _warn_fallback_once(f"[agent_alphazero_v1] Using {name} fallback.")
+            return fn(obs, config)
+        except TypeError:
+            try:
+                return fn(obs)
+            except Exception:
+                continue
+        except Exception:
+            continue
+    return []
 
 
 def _build_moves_from_root(root, world, deadline):
@@ -926,6 +997,13 @@ def agent(obs, config=None):
             if isinstance(fallback_moves, list):
                 return fallback_moves
             return []
+
+        # Hybrid control: use robust rule-based policy for opening/mid game,
+        # then switch to MCTS for late-game conversion.
+        if root_state.step <= 300 and time.perf_counter() < deadline - 0.12:
+            base_moves = _strong_fallback(obs, config)
+            if isinstance(base_moves, list) and base_moves:
+                return base_moves
 
         root = mcts_search(world, root_state, deadline)
         moves = _build_moves_from_root(root, world, deadline)
