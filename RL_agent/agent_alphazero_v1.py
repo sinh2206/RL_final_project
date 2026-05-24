@@ -42,6 +42,8 @@ EARLY_EXIT_BUFFER = 0.08
 COMET_MARGIN = 0.5
 COMET_MIN_DANGER_SHIPS = 6
 COMET_TARGET_MIN_REMAINING = 2.0
+FALLBACK_MAX_ORDERS = 4
+FALLBACK_MIN_SOURCE_SHIPS = 12
 
 
 # ============================================================
@@ -873,7 +875,135 @@ def _dangerous_comet_on_path(world, state, src, target, tx, ty, eta, send):
     return False
 
 
-def _strong_fallback(obs, config):
+def _fallback_target_score(state, world, sidx, tidx):
+    src = world["planets"][sidx]
+    tgt = world["planets"][tidx]
+    d = dist(src["x"], src["y"], tgt["x"], tgt["y"])
+    owner = int(state.owners[tidx])
+    tships = float(state.ships[tidx])
+    prod = float(world["production"][tidx])
+
+    if owner == state.current_player:
+        owner_term = 2.0
+    elif owner == -1:
+        owner_term = 7.5
+    else:
+        owner_term = 12.0
+
+    orbit_term = 0.9 if tgt["is_orbiting"] else 0.0
+    comet_term = 0.4 if tgt["is_comet"] else 0.0
+    return owner_term + prod * 4.6 + orbit_term + comet_term - 0.11 * tships - 0.09 * d
+
+
+def _fallback_send_amount(state, world, sidx, tidx, avail):
+    owner = int(state.owners[tidx])
+    tships = float(state.ships[tidx])
+    prod = float(world["production"][tidx])
+    src = world["planets"][sidx]
+    tgt = world["planets"][tidx]
+    eta = _estimate_eta(src, tgt["x"], tgt["y"], tgt["radius"], max(1, int(avail * 0.6)))
+    growth = prod * eta
+
+    if owner == state.current_player:
+        need = max(5, int(prod * 2.0))
+    elif owner == -1:
+        need = int(tships + 1 + 0.20 * growth)
+    else:
+        need = int(tships + 2 + 0.62 * growth)
+
+    need = max(1, need)
+    return max(1, min(need, max(1, avail - 1)))
+
+
+def _internal_fallback_moves(world, deadline):
+    state = world["state"]
+    p = state.current_player
+    owners = state.owners
+    ships = state.ships
+    planets = world["planets"]
+
+    my_sources = [i for i in range(len(planets)) if owners[i] == p and ships[i] >= FALLBACK_MIN_SOURCE_SHIPS]
+    if not my_sources:
+        my_sources = [i for i in range(len(planets)) if owners[i] == p and ships[i] > 1]
+    if not my_sources:
+        return []
+
+    my_sources.sort(key=lambda i: (ships[i], world["production"][i]), reverse=True)
+    my_sources = my_sources[: min(7, len(my_sources))]
+
+    target_idxs = [i for i in range(len(planets)) if i not in my_sources or owners[i] != p]
+    moves = []
+    used_sources = set()
+    reserved = {}
+
+    for sidx in my_sources:
+        if len(moves) >= FALLBACK_MAX_ORDERS:
+            break
+        if time.perf_counter() > deadline - EARLY_EXIT_BUFFER:
+            break
+        if sidx in used_sources:
+            continue
+
+        avail = int(ships[sidx]) - int(reserved.get(sidx, 0))
+        if avail <= 1:
+            continue
+
+        ranked = sorted(
+            target_idxs,
+            key=lambda tidx: _fallback_target_score(state, world, sidx, tidx),
+            reverse=True,
+        )[:TOP_K_TARGETS]
+
+        picked = False
+        for tidx in ranked:
+            if tidx == sidx:
+                continue
+            target = planets[tidx]
+            src = planets[sidx]
+            send = _fallback_send_amount(state, world, sidx, tidx, avail)
+            if send <= 0:
+                continue
+
+            angle, eta, tx, ty = find_angle_to_moving_planet(src, target, send, world["omega"], world["comet_map"])
+            if angle is None or eta is None:
+                continue
+            if target["is_comet"]:
+                life = world["comet_map"].get(target["id"], {}).get("life", 0)
+                if eta > max(0.0, life - COMET_TARGET_MIN_REMAINING):
+                    continue
+
+            if _dangerous_comet_on_path(world, state, src, target, tx, ty, eta, send):
+                continue
+
+            if not math.isfinite(angle):
+                continue
+            if send >= avail:
+                continue
+
+            moves.append([int(src["id"]), float(angle), int(send)])
+            used_sources.add(sidx)
+            reserved[sidx] = reserved.get(sidx, 0) + send
+            picked = True
+            break
+
+        # no valid target for this source, try next source
+        if not picked:
+            continue
+
+    return moves
+
+
+def _strong_fallback(obs, config, world=None, deadline=None):
+    if deadline is None:
+        deadline = time.perf_counter() + 0.6
+
+    if world is None:
+        try:
+            world = _parse_world(obs)
+        except Exception:
+            world = None
+
+    # First, try external strong policies if packaged.
     for name, fn in (
         ("rule_base_v1", _rule_base_v1_agent),
         ("rule_base_v4", _rule_base_v4_agent),
@@ -892,7 +1022,15 @@ def _strong_fallback(obs, config):
                 continue
         except Exception:
             continue
-    return []
+
+    # Always have an internal fallback so the agent never stalls on Kaggle.
+    try:
+        _warn_fallback_once("[agent_alphazero_v1] Using internal heuristic fallback.")
+        if world is None:
+            return []
+        return _internal_fallback_moves(world, deadline)
+    except Exception:
+        return []
 
 
 def _build_moves_from_root(root, world, deadline):
@@ -993,7 +1131,7 @@ def agent(obs, config=None):
 
         # No model available -> robust rule-based fallback.
         if get_model() is None:
-            fallback_moves = _strong_fallback(obs, config)
+            fallback_moves = _strong_fallback(obs, config, world=world, deadline=deadline)
             if isinstance(fallback_moves, list):
                 return fallback_moves
             return []
@@ -1001,7 +1139,7 @@ def agent(obs, config=None):
         # Hybrid control: use robust rule-based policy for opening/mid game,
         # then switch to MCTS for late-game conversion.
         if root_state.step <= 300 and time.perf_counter() < deadline - 0.12:
-            base_moves = _strong_fallback(obs, config)
+            base_moves = _strong_fallback(obs, config, world=world, deadline=deadline)
             if isinstance(base_moves, list) and base_moves:
                 return base_moves
 
@@ -1012,7 +1150,7 @@ def agent(obs, config=None):
             return moves
 
         # If MCTS gives no valid move under strict safety filters.
-        fallback_moves = _strong_fallback(obs, config)
+        fallback_moves = _strong_fallback(obs, config, world=world, deadline=deadline)
         if isinstance(fallback_moves, list):
             return fallback_moves
         return []
