@@ -3,6 +3,10 @@ import time
 from collections import defaultdict, namedtuple
 from dataclasses import dataclass, field
 
+# ============================================================
+# Shared Configuration
+# ============================================================
+
 BOARD = 100.0
 CENTER_X = 50.0
 CENTER_Y = 50.0
@@ -2295,7 +2299,7 @@ def plan_moves(world, deadline=None):
     # ---------------------------------------------------------------
     # Quick reinforcement pass: shore up underdefended planets by
     # transferring from nearby surplus planets before missions are built.
-    # (Hyperion-style: weak < 12 ships, strong > 25 ships, range ≤ 25)
+    # (Hyperion-style: weak < 12 ships, strong > 25 ships, range â‰¤ 25)
     # ---------------------------------------------------------------
     if allow_optional_phase():
         underdefended = []
