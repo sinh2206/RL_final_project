@@ -36,14 +36,19 @@ PLANET_FEAT_DIM = 10
 FLEET_FEAT_DIM = 6
 GLOBAL_FEAT_DIM = 16
 
-SOFT_DEADLINE = 0.90
-EARLY_EXIT_BUFFER = 0.08
+SOFT_DEADLINE = 0.78
+EARLY_EXIT_BUFFER = 0.07
 
 COMET_MARGIN = 0.5
 COMET_MIN_DANGER_SHIPS = 6
 COMET_TARGET_MIN_REMAINING = 2.0
 FALLBACK_MAX_ORDERS = 4
 FALLBACK_MIN_SOURCE_SHIPS = 12
+SELFPLAY_TOP_K = 3
+SELFPLAY_MIN_TIME_LEFT = 0.06
+SELFPLAY_COUNTER_HORIZON = 8.0
+SELFPLAY_COUNTER_FRACTION = 0.32
+SELFPLAY_RISK_WEIGHT = 0.52
 
 
 # ============================================================
@@ -875,6 +880,75 @@ def _dangerous_comet_on_path(world, state, src, target, tx, ty, eta, send):
     return False
 
 
+def _estimate_counter_threat(world, state, target_idx, arrival_turn):
+    player = state.current_player
+    owners = state.owners
+    ships = state.ships
+    planets = world["planets"]
+    target = planets[target_idx]
+
+    horizon = arrival_turn + SELFPLAY_COUNTER_HORIZON
+    threat = 0.0
+    for i, src in enumerate(planets):
+        if owners[i] in (-1, player):
+            continue
+        eships = float(ships[i])
+        if eships <= 1.0:
+            continue
+        eta = _estimate_eta(src, target["x"], target["y"], target["radius"], max(1, int(eships * 0.45)))
+        if eta <= horizon:
+            threat += max(0.0, eships - 1.0) * SELFPLAY_COUNTER_FRACTION
+    return threat
+
+
+def _selfplay_action_score(world, state, sidx, tidx, send):
+    if sidx < 0 or tidx < 0:
+        return -1e9
+    planets = world["planets"]
+    src = planets[sidx]
+    tgt = planets[tidx]
+    owners = state.owners
+    ships = state.ships
+    p = state.current_player
+
+    send = max(1, int(send))
+    eta = _estimate_eta(src, tgt["x"], tgt["y"], tgt["radius"], send)
+    t_owner = int(owners[tidx])
+    t_ships = float(ships[tidx])
+    prod = float(world["production"][tidx])
+    need = t_ships + 1.0 + (prod * eta * (0.62 if t_owner != -1 else 0.20))
+    capture_like = 1.0 if send >= need else max(0.0, min(1.0, (send + 1.0) / max(1.0, need)))
+
+    own_term = 3.0 if t_owner == p else (8.5 if t_owner == -1 else 13.0)
+    growth_term = prod * max(0.0, 500.0 - state.step - eta) * 0.025
+    speed_term = -0.22 * eta
+    ship_cost = -0.08 * send
+    counter_threat = _estimate_counter_threat(world, state, tidx, eta)
+    risk_term = -SELFPLAY_RISK_WEIGHT * max(0.0, counter_threat - max(0.0, send - 1.0))
+    return own_term + growth_term + speed_term + ship_cost + risk_term + 3.6 * capture_like
+
+
+def _selfplay_reorder_actions(ranked, world, state, deadline):
+    # Time-safe light re-ranking: only top-k candidates and only when we have slack.
+    if deadline - time.perf_counter() <= SELFPLAY_MIN_TIME_LEFT:
+        return ranked
+
+    top = ranked[: max(SELFPLAY_TOP_K, 1)]
+    rest = ranked[max(SELFPLAY_TOP_K, 1) :]
+    rescored = []
+    for visits, idx, act in top:
+        if act.pass_action:
+            score = -1e9
+        else:
+            sp = _selfplay_action_score(world, state, act.src_idx, act.tgt_idx, act.ships)
+            score = 0.48 * float(visits) + 0.52 * sp
+        rescored.append((score, visits, idx, act))
+
+    rescored.sort(reverse=True, key=lambda x: (x[0], x[1], x[3].heuristic))
+    top_new = [(v, i, a) for _, v, i, a in rescored]
+    return top_new + rest
+
+
 def _fallback_target_score(state, world, sidx, tidx):
     src = world["planets"][sidx]
     tgt = world["planets"][tidx]
@@ -948,11 +1022,16 @@ def _internal_fallback_moves(world, deadline):
         if avail <= 1:
             continue
 
-        ranked = sorted(
-            target_idxs,
-            key=lambda tidx: _fallback_target_score(state, world, sidx, tidx),
-            reverse=True,
-        )[:TOP_K_TARGETS]
+        ranked_scores = []
+        for tidx in target_idxs:
+            base = _fallback_target_score(state, world, sidx, tidx)
+            if deadline - time.perf_counter() > SELFPLAY_MIN_TIME_LEFT:
+                probe_send = _fallback_send_amount(state, world, sidx, tidx, avail)
+                sp = _selfplay_action_score(world, state, sidx, tidx, probe_send)
+                base = 0.56 * base + 0.44 * sp
+            ranked_scores.append((base, tidx))
+        ranked_scores.sort(reverse=True, key=lambda x: x[0])
+        ranked = [tidx for _, tidx in ranked_scores[:TOP_K_TARGETS]]
 
         picked = False
         for tidx in ranked:
@@ -1043,6 +1122,7 @@ def _build_moves_from_root(root, world, deadline):
         visits = 0 if ch is None else ch.visit_count
         ranked.append((visits, i, act))
     ranked.sort(reverse=True, key=lambda x: (x[0], x[2].heuristic))
+    ranked = _selfplay_reorder_actions(ranked, world, root.state, deadline)
 
     moves = []
     used_sources = set()

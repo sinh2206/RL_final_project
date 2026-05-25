@@ -80,6 +80,11 @@ FALLBACK_ATTACK_BUFFER = 1
 FALLBACK_COORD_SOURCES = 2
 LATE_FALLBACK_START = 250
 VERY_LATE_FALLBACK_START = 340
+SELFPLAY_TOP_K = 3
+SELFPLAY_MIN_TIME_LEFT = 0.06
+SELFPLAY_COUNTER_HORIZON = 8.0
+SELFPLAY_COUNTER_FRACTION = 0.35
+SELFPLAY_RISK_WEIGHT = 0.55
 
 
 # ============================================================
@@ -602,6 +607,58 @@ def _base_target_score(src, target, player):
     return value
 
 
+def _enemy_counter_threat(world, target, arrival_turn):
+    player = world["player"]
+    omega = world["omega"]
+    comet_index = world["comet_index"]
+    threat = 0.0
+
+    horizon = arrival_turn + SELFPLAY_COUNTER_HORIZON
+    for ep in world["planets"]:
+        if ep["owner"] in (-1, player):
+            continue
+        if ep["ships"] <= 1:
+            continue
+        probe = max(1, int(ep["ships"] * 0.45))
+        _, eta, _, _ = _compute_attack_angle(ep, target, probe, omega, comet_index)
+        if eta is None:
+            continue
+        if eta <= horizon:
+            threat += max(0.0, (ep["ships"] - 1.0) * SELFPLAY_COUNTER_FRACTION)
+    return threat
+
+
+def _self_play_score(src, target, send, world):
+    player = world["player"]
+    omega = world["omega"]
+    comet_index = world["comet_index"]
+
+    angle, eta, _, _ = _compute_attack_angle(src, target, send, omega, comet_index)
+    if angle is None or eta is None:
+        return -1e9
+
+    need = _fallback_needed_ships(src, target, world, probe_send=max(1, send))
+    capture_margin = float(send - need)
+    capture_like = 1.0 if capture_margin >= 0 else _clip((send + 1.0) / max(1.0, need), 0.0, 1.0)
+
+    own_term = 0.0
+    if target["owner"] == player:
+        own_term += 3.0
+    elif target["owner"] == -1:
+        own_term += 9.0
+    else:
+        own_term += 13.0
+
+    growth_term = target["production"] * max(0.0, (TOTAL_STEPS - world["step"] - eta)) * 0.025
+    speed_term = -0.22 * eta
+    ship_cost = -0.08 * send
+
+    counter_threat = _enemy_counter_threat(world, target, eta)
+    risk_term = -SELFPLAY_RISK_WEIGHT * max(0.0, counter_threat - max(0.0, send - 1.0))
+
+    return own_term + growth_term + speed_term + ship_cost + risk_term + 3.8 * capture_like
+
+
 def _select_target_from_angle(src, targets, player, predicted_angle):
     best = None
     best_score = -1e18
@@ -614,6 +671,41 @@ def _select_target_from_angle(src, targets, player, predicted_angle):
         if score > best_score:
             best_score = score
             best = t
+    return best
+
+
+def _select_target_with_selfplay(src, targets, player, predicted_angle, ships_to_send, world, deadline):
+    remaining = deadline - time.perf_counter()
+    # Keep <1s: skip self-play refinement if close to deadline.
+    if remaining <= SELFPLAY_MIN_TIME_LEFT:
+        return _select_target_from_angle(src, targets, player, predicted_angle)
+
+    candidates = []
+    for t in targets:
+        if t["id"] == src["id"]:
+            continue
+        to_t = math.atan2(t["y"] - src["y"], t["x"] - src["x"])
+        direction = math.cos(to_t - predicted_angle)
+        score = _base_target_score(src, t, player) + direction * 6.0
+        candidates.append((score, t))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    candidates = candidates[:SELFPLAY_TOP_K]
+
+    best = None
+    best_score = -1e18
+    for base_score, target in candidates:
+        if time.perf_counter() > deadline - MIN_REMAINING_SEC:
+            break
+        sp_score = _self_play_score(src, target, ships_to_send, world)
+        score = 0.45 * base_score + 0.55 * sp_score
+        if score > best_score:
+            best_score = score
+            best = target
+
+    if best is None:
+        return candidates[0][1]
     return best
 
 
@@ -749,7 +841,13 @@ def _fallback_heuristic(world, deadline):
             need_probe = _fallback_needed_ships(src, t, world, probe_send=max(1, int(available * 0.58)))
             feas = _clip((available - 1) / max(1.0, need_probe), 0.0, 1.6)
             base = _fallback_target_value(src, t, player)
-            ranked.append((base + 4.8 * feas, t))
+            score = base + 4.8 * feas
+            # Lightweight self-play shaping for fallback (only when time allows).
+            if deadline - time.perf_counter() > SELFPLAY_MIN_TIME_LEFT and not opening:
+                probe_send = max(1, min(need_probe + FALLBACK_ATTACK_BUFFER, available - 1))
+                sp = _self_play_score(src, t, probe_send, world)
+                score = 0.58 * score + 0.42 * sp
+            ranked.append((score, t))
         ranked.sort(key=lambda x: x[0], reverse=True)
         ranked = [t for _, t in ranked[:6]]
 
@@ -932,6 +1030,16 @@ def agent(obs, config=None):
                 if target is None:
                     continue
                 ships_to_send = max(1, min(int(available * 0.35), available - 1))
+                if deadline - time.perf_counter() > SELFPLAY_MIN_TIME_LEFT:
+                    target = _select_target_with_selfplay(
+                        src,
+                        targets,
+                        player,
+                        math.atan2(target["y"] - src["y"], target["x"] - src["x"]),
+                        ships_to_send,
+                        world,
+                        deadline,
+                    ) or target
                 angle, eta, _, _ = _compute_attack_angle(src, target, ships_to_send, omega, comet_index)
                 if angle is None:
                     continue
@@ -949,7 +1057,15 @@ def agent(obs, config=None):
             if pred_angle is None or ships_to_send <= 0:
                 continue
 
-            target = _select_target_from_angle(src, targets, player, pred_angle)
+            target = _select_target_with_selfplay(
+                src,
+                targets,
+                player,
+                pred_angle,
+                ships_to_send,
+                world,
+                deadline,
+            )
             if target is None:
                 continue
 
