@@ -85,6 +85,8 @@ SELFPLAY_MIN_TIME_LEFT = 0.06
 SELFPLAY_COUNTER_HORIZON = 8.0
 SELFPLAY_COUNTER_FRACTION = 0.35
 SELFPLAY_RISK_WEIGHT = 0.55
+FOUR_PLAYER_OPENING_TURN = 130
+FALLBACK_MAX_RESERVE = 16
 
 
 # ============================================================
@@ -401,6 +403,13 @@ def _parse_world(obs):
     fleets = _parse_fleets(raw_fleets)
     my_planets = [p for p in planets if p["owner"] == player]
     targets = [p for p in planets if p["owner"] != player]
+    owner_ids = {player}
+    for p in planets:
+        if p["owner"] >= 0:
+            owner_ids.add(p["owner"])
+    for f in fleets:
+        if f["owner"] >= 0:
+            owner_ids.add(f["owner"])
 
     return {
         "player": player,
@@ -414,6 +423,7 @@ def _parse_world(obs):
         "comet_index": comet_index,
         "my_planets": my_planets,
         "targets": targets,
+        "player_count": len(owner_ids),
     }
 
 
@@ -782,6 +792,19 @@ def _fallback_needed_ships(src, target, world, probe_send):
     return int(max(1.0, need))
 
 
+def _estimate_local_enemy_pressure(src, world):
+    player = world["player"]
+    pressure = 0.0
+    for ep in world["planets"]:
+        if ep["owner"] in (-1, player):
+            continue
+        d = dist(src["x"], src["y"], ep["x"], ep["y"])
+        if d > 48.0:
+            continue
+        pressure += ep["ships"] / (d + 10.0)
+    return pressure
+
+
 def _fallback_heuristic(world, deadline):
     moves = []
     player = world["player"]
@@ -793,6 +816,7 @@ def _fallback_heuristic(world, deadline):
     opening = world["step"] <= 110
     late = world["step"] >= LATE_FALLBACK_START
     very_late = world["step"] >= VERY_LATE_FALLBACK_START
+    four_player = world.get("player_count", 2) >= 4
     max_orders = FALLBACK_MAX_ORDERS + (2 if late else 0)
 
     for src in my_planets:
@@ -803,6 +827,9 @@ def _fallback_heuristic(world, deadline):
             break
 
         reserve_floor = 1 if late else FALLBACK_MIN_RESERVE
+        local_pressure = _estimate_local_enemy_pressure(src, world)
+        reserve_floor = max(reserve_floor, int(local_pressure * (1.6 if four_player else 1.2)))
+        reserve_floor = min(FALLBACK_MAX_RESERVE, reserve_floor)
         available = int(src["ships"]) - int(reserved.get(src["id"], 0))
         if available <= reserve_floor + 1:
             continue
@@ -841,6 +868,8 @@ def _fallback_heuristic(world, deadline):
             need_probe = _fallback_needed_ships(src, t, world, probe_send=max(1, int(available * 0.58)))
             feas = _clip((available - 1) / max(1.0, need_probe), 0.0, 1.6)
             base = _fallback_target_value(src, t, player)
+            if four_player and world["step"] <= FOUR_PLAYER_OPENING_TURN and t["owner"] not in (-1, player):
+                base -= 6.0
             score = base + 4.8 * feas
             # Lightweight self-play shaping for fallback (only when time allows).
             if deadline - time.perf_counter() > SELFPLAY_MIN_TIME_LEFT and not opening:
@@ -860,6 +889,11 @@ def _fallback_heuristic(world, deadline):
             if owner != player and not late and available - 1 < need + FALLBACK_ATTACK_BUFFER:
                 # Do not throw tiny fleets into larger neutral/enemy stacks.
                 continue
+
+            # In 4-player opening, avoid early wars unless we have clear local advantage.
+            if four_player and world["step"] <= FOUR_PLAYER_OPENING_TURN and owner not in (-1, player):
+                if available < int(max(need + 1, src["ships"] * 0.58)):
+                    continue
 
             if owner == player:
                 send = max(1, min(int(available * (0.34 if not late else 0.22)), available - 1))
@@ -896,6 +930,9 @@ def _fallback_heuristic(world, deadline):
 
     # Two-source coordinated capture for stubborn targets.
     if len(moves) < max_orders and time.perf_counter() < deadline:
+        if four_player and world["step"] <= FOUR_PLAYER_OPENING_TURN:
+            # Delay large coordinated all-ins in crowded early game.
+            return moves
         non_owned = [t for t in targets if t["owner"] != player]
         non_owned.sort(key=lambda t: (t["production"] - 0.08 * t["ships"]), reverse=True)
 
