@@ -1,0 +1,15 @@
+{
+  "name": "feature46_transformer_v2_mf200",
+  "schema": "feature46_v1",
+  "base_submission": "D:\\Work\\orbit_wars_agent\\submissions\\attention_dual_v4_self_s3",
+  "weights_2p": "D:\\Work\\orbit_wars_agent\\experiments\\feature46_transformer_v2\\generated\\transformer_weights_2p_mf200.py",
+  "weights_4p": "D:\\Work\\orbit_wars_agent\\experiments\\feature46_transformer_v2\\generated\\transformer_weights_4p_mf200.py",
+  "attention": {
+    "expand_2p": 10,
+    "expand_4p": 10,
+    "bonus_2p": 1.45,
+    "bonus_4p": 1.25,
+    "min_step": 0,
+    "jitter_4p": 1e-06
+  }
+}
