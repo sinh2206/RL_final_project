@@ -1,0 +1,66 @@
+### Các trọng số và tham số quan trọng trong các agent PPO
+
+Dưới đây là các trọng số (constants/parameters) quan trọng ảnh hưởng trực tiếp đến hành vi của các agent (`agent_PPO_v1`, `v2`, `v3`) trong Orbit Wars. Lưu ý: "trọng số" ở đây được hiểu là các tham số cấu hình hệ thống (constants) định nghĩa chiến thuật, không phải là trọng số của mạng thần kinh (weights).
+
+#### 1. Các tham số chung (có mặt ở cả 3 agent)
+*   `SUN_SAFETY` (1.5): Khoảng cách an toàn để tránh va chạm với mặt trời.
+*   `MAX_SPEED` (6.0): Tốc độ tối đa của đội tàu.
+*   `LAUNCH_CLEARANCE` (0.1): Khoảng cách tối thiểu khi phóng tàu.
+*   `COMET_LIFE_BUFFER` (2.0): Thời gian an toàn để khai thác sao chổi trước khi nó biến mất.
+*   `LOCAL_MODEL_FRACTION` (0.9): Tỉ lệ tàu tối đa model có thể gửi trong một hành động.
+*   `FALLBACK_MAX_ORDERS` (5): Số lượng hành động tối đa agent thực hiện trong một lượt khi chạy chế độ dự phòng.
+*   `FALLBACK_MIN_RESERVE` (3): Số lượng tàu tối thiểu cần giữ lại để phòng thủ.
+*   `FALLBACK_ATTACK_BUFFER` (1): Lượng tàu dư cần thiết để tấn công mục tiêu.
+
+#### 2. Các tham số bổ sung trong `agent_ppo_v2`
+*   `LATE_FALLBACK_START` (250): Bước game bắt đầu áp dụng chiến thuật cuối trận.
+*   `VERY_LATE_FALLBACK_START` (340): Bước game bắt đầu áp dụng chiến thuật rất cuối trận.
+*   `SELFPLAY_TOP_K` (3): Số lượng mục tiêu tốt nhất được xem xét trong tính toán self-play.
+*   `SELFPLAY_RISK_WEIGHT` (0.55): Trọng số rủi ro khi tính toán điểm số self-play.
+*   `FOUR_PLAYER_OPENING_TURN` (130): Bước game kết thúc giai đoạn mở đầu trong chế độ 4 người chơi.
+*   `FALLBACK_MAX_RESERVE` (16): Giới hạn tối đa số tàu giữ lại để phòng thủ.
+
+#### 3. Các tham số bổ sung trong `agent_ppo_v3`
+*   `MAX_PLANETS` (48), `MAX_FLEETS` (96): Giới hạn dữ liệu đầu vào.
+*   `SHIP_FRACTIONS` (0.20, 0.35, 0.50, 0.65, 0.80): Các tỉ lệ tàu có thể gửi (được model lựa chọn).
+*   `MAX_MOVES_PER_TURN` (8): Số lượt hành động tối đa mỗi vòng.
+*   `TURN_BUDGET` (0.78): Ngân sách thời gian (giây) cho một lượt đi.
+*   `D_MODEL` (64), `N_HEADS` (4), `N_LAYERS` (2): Cấu trúc kiến trúc mô hình (MAPPO Transformer).
+
+---
+
+### Thông tin về Agent AlphaZero (`agent_alphazero_v1.py`)
+
+#### Quá trình huấn luyện
+Agent `agent_alphazero_v1.py` sử dụng kiến trúc AlphaZero (kết hợp MCTS với mô hình Deep Learning). Quá trình huấn luyện diễn ra ngoại tuyến (offline) thông qua cơ chế self-play (AI tự đấu với chính nó) để tối ưu hóa hàm chính sách (policy function) và hàm giá trị (value function). Sau khi huấn luyện, mô hình được xuất sang định dạng ONNX (`alphazero_model.onnx`) để agent sử dụng trong quá trình suy luận theo thời gian thực.
+
+#### Các trọng số và tham số quan trọng
+*   `MCTS_MAX_SIMULATIONS` (42): Số lượt mô phỏng tối đa cho MCTS.
+*   `MCTS_MAX_DEPTH` (6): Độ sâu tối đa của cây tìm kiếm MCTS.
+*   `MCTS_C_PUCT` (1.25): Hệ số thăm dò (exploration) trong MCTS.
+*   `TOP_K_TARGETS` (3): Số mục tiêu hàng đầu được xem xét.
+*   `MAX_ACTIONS_PER_NODE` (28): Số hành động tối đa trên mỗi nút cây.
+*   `FINAL_MAX_ORDERS` (3): Số hành động tối đa trong lượt cuối.
+*   `MIN_SOURCE_SHIPS` (10): Số tàu tối thiểu ở nguồn để thực hiện hành động.
+*   `COMET_MIN_DANGER_SHIPS` (6): Số tàu tối thiểu để coi sao chổi là nguy hiểm.
+*   `SELFPLAY_TOP_K` (3): Số lượng mục tiêu tốt nhất xem xét trong self-play.
+
+---
+
+### Thông tin về Agent DucAnh_v4 (`agent_ducanh_v4`)
+
+#### Cơ chế huấn luyện và áp dụng PPO
+Agent này sử dụng mô hình PPO (`PPOActorCritic` trong `ppo_agent.py`) được huấn luyện ngoại tuyến. PPO ở đây không đóng vai trò quyết định toàn bộ hành động, mà được sử dụng để **chấm điểm (score)** và **xếp hạng (rank)** các hành động/mục tiêu tiềm năng.
+
+1.  **Kết hợp (Blending):** Trong `main.py`, phương thức `_score_with_model` kết hợp điểm số heuristic vật lý (`phys_scores`) với logits từ mô hình PPO theo công thức: 
+    `blended = phys_score * (1.0 + ALPHA * sigmoid(model_logit))`
+2.  **Mục tiêu:** PPO giúp agent đưa ra các quyết định chiến thuật tinh tế hơn (như Focus Fire, đánh giá rủi ro) mà các thuật toán heuristic thuần túy khó nắm bắt được.
+
+#### Các trọng số và tham số quan trọng
+*   `ALPHA` (0.5): Trọng số dùng để blend điểm số heuristic và PPO logit.
+*   `ProducerLiteConfig`:
+    *   `horizon` (18): Khoảng thời gian dự báo tương lai.
+    *   `roi_threshold` (1.5): Ngưỡng để quyết định hành động tấn công có hiệu quả.
+    *   `min_ships_to_launch` (4.0): Số tàu tối thiểu để thực hiện một hành động phóng tàu.
+    *   `max_strike_sources` (4): Số lượng tàu tối đa phối hợp trong một lần tấn công (Focus Fire).
+*   `feature46_weights_2p`/`4p` (tệp trọng số): Các bộ trọng số huấn luyện riêng cho chế độ 2 và 4 người chơi.

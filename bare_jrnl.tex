@@ -1,0 +1,100 @@
+\documentclass[conference]{IEEEtran}
+
+
+\usepackage[utf8]{inputenc}
+\usepackage[vietnamese]{babel}
+\usepackage[T1]{fontenc}
+
+\addto\captionsvietnamese{\renewcommand{\abstractname}{Tóm tắt}}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Xây dựng tác tử cho môi trường Orbit Wars: Từ Học tăng cường đến phương pháp Heuristic}
+
+\author{
+\IEEEauthorblockN{Lâm Đức Anh, Phan Tuấn Hiệp, Đinh Văn Sinh}
+\IEEEauthorblockA{
+    \textit{Viện Trí tuệ Nhân tạo, Trường Đại học Công nghệ} \\
+    Hà Nội, Việt Nam \\
+    Email: \{23020326, 23020364, 22022615\}@vnu.edu.vn
+}
+}
+
+\maketitle
+
+\begin{abstract}
+Orbit Wars là một môi trường đầy thách thức để thử nghiệm các phương pháp học máy đa tác tử (Multi-Agent Reinforcement Learning - MARL). Trong nghiên cứu này, chúng tôi trình bày quá trình phát triển tác tử từ việc áp dụng các mô hình học tăng cường hiện đại như Proximal Policy Optimization (PPO) và AlphaZero cho đến khi chuyển dịch sang một hệ thống dựa trên luật (Heuristic) kết hợp với đánh giá bằng mạng thần kinh nhân tạo. Kết quả thực nghiệm cho thấy mặc dù các phương pháp học tăng cường có tiềm năng lớn nhưng gặp khó khăn về độ hội tụ và hiệu năng tính toán trong thời gian thực. Bằng cách kết hợp mô hình giả lập thế giới (World Model) và các chiến lược luật hóa tối ưu, tác tử của chúng tôi đã đạt được sự ổn định vượt trội với mức điểm trên 1000 trong môi trường thi đấu thực tế.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Học tăng cường, MARL, PPO, AlphaZero, Heuristic, Orbit Wars.
+\end{IEEEkeywords}
+
+\section{Giới thiệu}
+Môi trường Orbit Wars mô phỏng một cuộc chiến giữa các hành tinh trong một hệ mặt trời, nơi các tác tử phải điều phối tàu vũ trụ để chiếm đóng các hành tinh và tối ưu hóa sản lượng quân đội. Thử thách chính nằm ở việc quỹ đạo của các hành tinh luôn thay đổi theo thời gian, sự hiện diện của hố đen (mặt trời) gây nguy hiểm cho các đường bay, và sự cạnh tranh trực tiếp từ nhiều đối thủ (lên đến 4 người chơi).
+
+Ban đầu, chúng tôi tiếp cận bài toán bằng các thuật toán học tăng cường tiên tiến như PPO và AlphaZero với hy vọng tác tử có thể tự học các chiến thuật phức tạp. Tuy nhiên, do không gian trạng thái và hành động lớn, kết hợp với các ràng buộc về thời gian thực hiện (latency), việc đào tạo một mô hình thuần túy gặp nhiều trở ngại. Điều này dẫn đến quyết định chuyển đổi sang phương pháp Heuristic kết hợp với mô phỏng dòng thời gian (Timeline Simulation) để đưa ra quyết định chính xác và ổn định hơn.
+
+\section{Môi trường Orbit Wars}
+Môi trường bao gồm các thực thể chính:
+\begin{itemize}
+    \item \textbf{Hành tinh (Planets):} Có các thuộc tính về vị trí, bán kính, chủ sở hữu, số lượng tàu và sản lượng (production). Các hành tinh có thể đứng yên hoặc di chuyển theo quỹ đạo tròn quanh tâm hệ mặt trời.
+    \item \textbf{Tàu vũ trụ (Fleets):} Được phóng từ hành tinh này sang hành tinh khác. Tốc độ tàu phụ thuộc vào quy mô hạm đội.
+    \item \textbf{Mặt trời:} Nằm ở tâm (50, 50), bất kỳ tàu nào đi qua vùng ảnh hưởng của mặt trời sẽ bị phá hủy.
+    \item \textbf{Cơ chế chiến đấu:} Sử dụng cơ chế cộng dồn quân đội và triệt tiêu lẫn nhau giữa các phe phái tại cùng một hành tinh trong cùng một lượt.
+\end{itemize}
+
+\section{Phương pháp tiếp cận}
+
+Quá trình phát triển tác tử trải qua ba giai đoạn chính, từ các mô hình học tăng cường đơn giản đến hệ thống lai phức tạp.
+
+\subsection{Học tăng cường giai đoạn đầu (v1)}
+Phiên bản đầu tiên (\textit{agent\_PPO\_v1}) sử dụng thuật toán PPO với một vector đặc trưng phẳng (512 chiều) tổng hợp thông tin từ các hành tinh và hạm đội gần nhất.
+\begin{itemize}
+    \item \textbf{Đầu ra:} Mô hình dự đoán một góc phóng ($\alpha$) và tỷ lệ quân số.
+    \item \textbf{Cơ chế mục tiêu:} Một hàm Heuristic sẽ duyệt qua các hành tinh đối thủ và chọn ra mục tiêu có hướng bay sát nhất với góc $\alpha$ do mô hình đề xuất.
+    \item \textbf{Hạn chế:} Việc dự đoán góc khiến mô hình khó tối ưu hóa trực tiếp việc chiếm đóng hành tinh cụ thể, dẫn đến các hành động không nhất quán khi quỹ đạo thay đổi.
+\end{itemize}
+
+\subsection{Cải tiến với Kiến trúc Transformer (v3)}
+Để khắc phục hạn chế của v1, phiên bản \textit{agent\_ppo\_v3} chuyển sang kiến trúc MAPPO (Multi-Agent PPO) kết hợp với Transformer Encoder.
+\begin{itemize}
+    \item \textbf{Attention Mechanism:} Sử dụng cơ chế chú ý để mô hình hóa mối quan hệ phi tuyến giữa các thực thể trong không gian. Đặc biệt là Cross-Attention giữa tập hợp các hành tinh và các hạm đội đang bay.
+    \item \textbf{Dự đoán trực tiếp:} Thay vì dự đoán góc, mô hình đưa ra xác suất chọn mục tiêu (\textit{target logits}) và xác suất chọn tỷ lệ quân (\textit{fraction logits}) cho từng hành tinh nguồn.
+    \item \textbf{Re-ranking:} Kết quả từ mạng thần kinh được tinh chỉnh lại bằng logic Heuristic để đảm bảo tính khả thi về mặt vật lý (tránh mặt trời, chặn đầu mục tiêu di động).
+\end{itemize}
+
+\subsection{Phương pháp Hybrid và Chấm điểm kết hợp}
+Giai đoạn cuối cùng chứng kiến sự chuyển dịch hoàn toàn sang mô hình lai (Hybrid). Thay vì để RL đưa ra quyết định hành động, chúng tôi sử dụng RL như một bộ chấm điểm (\textit{Scorer}) cho các chiến thuật được tạo ra bởi Heuristic.
+\begin{enumerate}
+    \item \textbf{Candidate Generation:} Hệ thống Heuristic (dựa trên bộ thư viện \textit{orbit\_lite}) đề xuất các tập hợp hành động tối ưu dựa trên World Model (giả lập 110 bước tương lai). Các chiến thuật bao gồm: \textit{Focus Fire} (tập trung hỏa lực), \textit{Regroup} (điều quân phòng thủ) và \textit{Snipe} (đánh úp).
+    \item \textbf{Blended Scoring:} Mỗi ứng viên hành động được chấm điểm bởi công thức:
+    \begin{equation}
+    S_{final} = S_{phys} \times (1.0 + \alpha \cdot \sigma(L_{model}))
+    \end{equation}
+    Trong đó $S_{phys}$ là điểm số vật lý từ Heuristic, $L_{model}$ là giá trị logit từ mô hình PPO Transformer, và $\sigma$ là hàm sigmoid.
+    \item \textbf{Ưu điểm:} Cách tiếp cận này kết hợp được độ tin cậy tuyệt đối về vật lý của Heuristic và khả năng đưa ra quyết định chiến thuật nhạy bén của mạng thần kinh.
+\end{enumerate}
+
+\section{Thí nghiệm và Kết quả}
+Các thí nghiệm được thực hiện thông qua việc giả lập đấu nội bộ và tham gia bảng xếp hạng công khai. 
+\begin{itemize}
+    \item Các phiên bản PPO ban đầu đạt mức điểm từ 600-800, thường xuyên gặp lỗi va chạm mặt trời.
+    \item Phiên bản Heuristic (v1, v2) cho thấy sự cải thiện rõ rệt, đặc biệt là khả năng phòng thủ và chiếm đóng các hành tinh trung lập một cách tối ưu.
+    \item Phiên bản Hybrid (Heuristic + MLP) đạt độ ổn định cao nhất, duy trì mức điểm trên 1000 và có khả năng đối phó tốt với các tác tử của người chơi khác.
+\end{itemize}
+
+\section{Kết luận}
+Nghiên cứu chỉ ra rằng trong các môi trường game chiến thuật thời gian thực với ràng buộc tính toán khắt khe, việc sử dụng Heuristic để thu hẹp không gian tìm kiếm và kết hợp với học máy để tinh chỉnh quyết định mang lại hiệu quả cao hơn so với các phương pháp RL thuần túy. Trong tương lai, chúng tôi dự định cải thiện bộ đánh giá MLP bằng các kiến trúc Transformer để nắm bắt tốt hơn mối quan hệ giữa các hành tinh.
+
+\end{document}
