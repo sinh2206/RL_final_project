@@ -1,66 +1,200 @@
-### Các trọng số và tham số quan trọng trong các agent PPO
+ Phân tích chi tiết Agent PPO v1 trong Orbit Wars
 
-Dưới đây là các trọng số (constants/parameters) quan trọng ảnh hưởng trực tiếp đến hành vi của các agent (`agent_PPO_v1`, `v2`, `v3`) trong Orbit Wars. Lưu ý: "trọng số" ở đây được hiểu là các tham số cấu hình hệ thống (constants) định nghĩa chiến thuật, không phải là trọng số của mạng thần kinh (weights).
+ 1. Giải thích các hàm (def) trong agent_PPO_v1.py
 
-#### 1. Các tham số chung (có mặt ở cả 3 agent)
-*   `SUN_SAFETY` (1.5): Khoảng cách an toàn để tránh va chạm với mặt trời.
-*   `MAX_SPEED` (6.0): Tốc độ tối đa của đội tàu.
-*   `LAUNCH_CLEARANCE` (0.1): Khoảng cách tối thiểu khi phóng tàu.
-*   `COMET_LIFE_BUFFER` (2.0): Thời gian an toàn để khai thác sao chổi trước khi nó biến mất.
-*   `LOCAL_MODEL_FRACTION` (0.9): Tỉ lệ tàu tối đa model có thể gửi trong một hành động.
-*   `FALLBACK_MAX_ORDERS` (5): Số lượng hành động tối đa agent thực hiện trong một lượt khi chạy chế độ dự phòng.
-*   `FALLBACK_MIN_RESERVE` (3): Số lượng tàu tối thiểu cần giữ lại để phòng thủ.
-*   `FALLBACK_ATTACK_BUFFER` (1): Lượng tàu dư cần thiết để tấn công mục tiêu.
+ Hệ thống tải Model và Fallback (Dự phòng)
+   _load_fallback_agent: Tải các agent heuristic (quy tắc) để dự phòng nếu model AI gặp sự cố.
+   get_model: Khởi tạo và tải mô hình ONNX (`ppo_model.onnx`). Sử dụng `onnxruntime` để chạy suy luận trên CPU.
+   _warn_once / _warn_fallback_once: Hiển thị cảnh báo lỗi chỉ một lần để tránh làm tràn log.
 
-#### 2. Các tham số bổ sung trong `agent_ppo_v2`
-*   `LATE_FALLBACK_START` (250): Bước game bắt đầu áp dụng chiến thuật cuối trận.
-*   `VERY_LATE_FALLBACK_START` (340): Bước game bắt đầu áp dụng chiến thuật rất cuối trận.
-*   `SELFPLAY_TOP_K` (3): Số lượng mục tiêu tốt nhất được xem xét trong tính toán self-play.
-*   `SELFPLAY_RISK_WEIGHT` (0.55): Trọng số rủi ro khi tính toán điểm số self-play.
-*   `FOUR_PLAYER_OPENING_TURN` (130): Bước game kết thúc giai đoạn mở đầu trong chế độ 4 người chơi.
-*   `FALLBACK_MAX_RESERVE` (16): Giới hạn tối đa số tàu giữ lại để phòng thủ.
+ Tiện ích tính toán (Utilities)
+   dist: Tính khoảng cách Euclidean giữa hai điểm.
+   fleet_speed: Tính tốc độ của hạm đội dựa trên số lượng tàu (nhiều tàu hơn thì chậm hơn theo logarit).
+   _clip / _safe_float / _safe_int: Các hàm ép kiểu và giới hạn giá trị an toàn.
+   _wrap_pi: Chuẩn hóa góc về khoảng [-π, π].
 
-#### 3. Các tham số bổ sung trong `agent_ppo_v3`
-*   `MAX_PLANETS` (48), `MAX_FLEETS` (96): Giới hạn dữ liệu đầu vào.
-*   `SHIP_FRACTIONS` (0.20, 0.35, 0.50, 0.65, 0.80): Các tỉ lệ tàu có thể gửi (được model lựa chọn).
-*   `MAX_MOVES_PER_TURN` (8): Số lượt hành động tối đa mỗi vòng.
-*   `TURN_BUDGET` (0.78): Ngân sách thời gian (giây) cho một lượt đi.
-*   `D_MODEL` (64), `N_HEADS` (4), `N_LAYERS` (2): Cấu trúc kiến trúc mô hình (MAPPO Transformer).
+ Vật lý và Quỹ đạo (Physics & Orbit)
+   line_seg_min_dist: Tính khoảng cách ngắn nhất từ một điểm (Mặt trời) đến một đoạn thẳng (đường đi của đạn/tàu).
+   path_crosses_sun / _segment_hits_sun_to_target: Kiểm tra xem đường bay có va chạm với Mặt trời (vùng nguy hiểm) hay không.
+   _is_orbiting_planet: Xác định hành tinh có nằm trong vùng chịu ảnh hưởng của trọng lực Mặt trời (quỹ đạo) không.
+   predict_orbit: Dự đoán vị trí của hành tinh trên quỹ đạo sau một số lượt (turn).
+   _build_comet_index / predict_comet_position / comet_remaining_life: Xử lý logic cho Sao chổi (Comet): dự đoán vị trí và thời gian tồn tại còn lại.
+   predict_target_position: Hàm tổng hợp để dự đoán vị trí mục tiêu (bất kể là đứng yên, quỹ đạo hay sao chổi).
+
+ Xử lý môi trường (World Parsing)
+   _parse_planets / _parse_fleets / _parse_world: Chuyển đổi dữ liệu thô từ môi trường game thành các đối tượng Python dễ quản lý.
+   _infer_extra_comet_ids: Suy luận các ID của sao chổi dựa trên đặc điểm vật lý nếu dữ liệu không cung cấp trực tiếp.
+
+ Vector quan sát (Observation Vector)
+   _planet_features / _fleet_features / _comet_features: Trích xuất đặc trưng của từng hành tinh, hạm đội và sao chổi (vị trí tương đối, số tàu, sản lượng, chủ sở hữu...).
+   build_obs_vector: Tổng hợp tất cả thông tin thành một vector 512 chiều (`OBS_DIM`). Đây là đầu vào cho mô hình PPO.
+
+ Logic ra quyết định (Decision Logic)
+   _run_model: Đưa vector quan sát vào mô hình ONNX để lấy ra hành động (góc bắn và tỉ lệ quân).
+   _decode_action: Giải mã đầu ra của model AI thành góc bắn thực tế và số lượng tàu cần gửi.
+   _select_target_from_angle: Chọn hành tinh mục tiêu tốt nhất dựa trên góc bắn mà mô hình AI gợi ý.
+   _compute_attack_angle: Tính toán góc đánh chặn (intercept) chính xác cho các mục tiêu đang di chuyển và kiểm tra va chạm Mặt trời.
+   _is_action_valid: Kiểm tra tính hợp lệ của hành động (đủ quân, góc hợp lệ).
+
+ Hệ thống Heuristic dự phòng (Fallback Heuristic)
+   _fallback_target_value / _fallback_needed_ships: Đánh giá giá trị mục tiêu và tính số quân cần thiết theo các quy tắc toán học cố định.
+   _fallback_heuristic: Chiến thuật chơi dựa trên luật (Rule-based) khi không dùng AI.
+   _strong_fallback: Cố gắng sử dụng các phiên bản agent rule-base mạnh hơn (v1, v4...) nếu có sẵn.
+
+ Hàm chính (Main Entrypoint)
+   agent: Hàm điều phối chính, nhận quan sát, gọi model AI, nếu AI thất bại hoặc không đưa ra hành động thì chuyển sang hệ thống dự phòng.
 
 ---
 
-### Thông tin về Agent AlphaZero (`agent_alphazero_v1.py`)
+ 2. Các trọng số và tham số chính
 
-#### Quá trình huấn luyện
-Agent `agent_alphazero_v1.py` sử dụng kiến trúc AlphaZero (kết hợp MCTS với mô hình Deep Learning). Quá trình huấn luyện diễn ra ngoại tuyến (offline) thông qua cơ chế self-play (AI tự đấu với chính nó) để tối ưu hóa hàm chính sách (policy function) và hàm giá trị (value function). Sau khi huấn luyện, mô hình được xuất sang định dạng ONNX (`alphazero_model.onnx`) để agent sử dụng trong quá trình suy luận theo thời gian thực.
-
-#### Các trọng số và tham số quan trọng
-*   `MCTS_MAX_SIMULATIONS` (42): Số lượt mô phỏng tối đa cho MCTS.
-*   `MCTS_MAX_DEPTH` (6): Độ sâu tối đa của cây tìm kiếm MCTS.
-*   `MCTS_C_PUCT` (1.25): Hệ số thăm dò (exploration) trong MCTS.
-*   `TOP_K_TARGETS` (3): Số mục tiêu hàng đầu được xem xét.
-*   `MAX_ACTIONS_PER_NODE` (28): Số hành động tối đa trên mỗi nút cây.
-*   `FINAL_MAX_ORDERS` (3): Số hành động tối đa trong lượt cuối.
-*   `MIN_SOURCE_SHIPS` (10): Số tàu tối thiểu ở nguồn để thực hiện hành động.
-*   `COMET_MIN_DANGER_SHIPS` (6): Số tàu tối thiểu để coi sao chổi là nguy hiểm.
-*   `SELFPLAY_TOP_K` (3): Số lượng mục tiêu tốt nhất xem xét trong self-play.
+   OBS_DIM (512): Kích thước vector đầu vào của mạng thần kinh.
+   MAX_PLANETS (28), MAX_FLEETS (20), MAX_COMETS (8): Giới hạn số lượng thực thể được đưa vào vector quan sát để giữ kích thước cố định.
+   LOCAL_MODEL_FRACTION (0.9): Tỉ lệ quân tối đa mà model AI được phép sử dụng từ một hành tinh (giữ lại 10% phòng thủ).
+   BOARD_SIZE (100.0): Kích thước bản đồ.
+   SUN_RADIUS (10.0) + SUN_SAFETY (1.5): Vùng nguy hiểm quanh Mặt trời cần tránh.
+   Tỉ lệ chuẩn hóa: Các giá trị như số tàu, sản lượng được chuẩn hóa bằng logarit hoặc chia cho giá trị tối đa (ví dụ: `log(ships)/log(2000)`) để model học tốt hơn.
 
 ---
 
-### Thông tin về Agent DucAnh_v4 (`agent_ducanh_v4`)
+ 3. Quá trình huấn luyện (PPO Training)
 
-#### Cơ chế huấn luyện và áp dụng PPO
-Agent này sử dụng mô hình PPO (`PPOActorCritic` trong `ppo_agent.py`) được huấn luyện ngoại tuyến. PPO ở đây không đóng vai trò quyết định toàn bộ hành động, mà được sử dụng để **chấm điểm (score)** và **xếp hạng (rank)** các hành động/mục tiêu tiềm năng.
+Phương pháp PPO (Proximal Policy Optimization) là một thuật toán Reinforcement Learning thuộc họ Policy Gradient:
+1.  Thu thập dữ liệu: Agent chơi hàng ngàn trận đấu trong môi trường Orbit Wars, lưu lại các cặp (Trạng thái, Hành động, Phần thưởng).
+2.  Hàm mục tiêu (Objective Function): PPO sử dụng một cơ chế "clipping" để giới hạn mức độ thay đổi của chính sách (policy) trong mỗi bước cập nhật, giúp quá trình huấn luyện ổn định hơn, tránh các thay đổi quá lớn làm hỏng model.
+3.  Mạng Actor-Critic:
+       Actor: Học cách chọn góc bắn và tỉ lệ quân (đầu ra của `ppo_model.onnx`).
+       Critic: Học cách dự đoán giá trị (phần thưởng kỳ vọng) của một trạng thái để hỗ trợ Actor.
+4.  Phần thưởng (Rewards): Thường bao gồm điểm cộng khi chiếm được hành tinh, tăng sản lượng quân, thắng trận và điểm trừ khi mất hành tinh hoặc đâm vào Mặt trời.
 
-1.  **Kết hợp (Blending):** Trong `main.py`, phương thức `_score_with_model` kết hợp điểm số heuristic vật lý (`phys_scores`) với logits từ mô hình PPO theo công thức: 
-    `blended = phys_score * (1.0 + ALPHA * sigmoid(model_logit))`
-2.  **Mục tiêu:** PPO giúp agent đưa ra các quyết định chiến thuật tinh tế hơn (như Focus Fire, đánh giá rủi ro) mà các thuật toán heuristic thuần túy khó nắm bắt được.
+---
 
-#### Các trọng số và tham số quan trọng
-*   `ALPHA` (0.5): Trọng số dùng để blend điểm số heuristic và PPO logit.
-*   `ProducerLiteConfig`:
-    *   `horizon` (18): Khoảng thời gian dự báo tương lai.
-    *   `roi_threshold` (1.5): Ngưỡng để quyết định hành động tấn công có hiệu quả.
-    *   `min_ships_to_launch` (4.0): Số tàu tối thiểu để thực hiện một hành động phóng tàu.
-    *   `max_strike_sources` (4): Số lượng tàu tối đa phối hợp trong một lần tấn công (Focus Fire).
-*   `feature46_weights_2p`/`4p` (tệp trọng số): Các bộ trọng số huấn luyện riêng cho chế độ 2 và 4 người chơi.
+ 4. Cách chơi trong Orbit Wars
+
+Chiến thuật của Agent PPO v1 là sự kết hợp giữa Trí tuệ nhân tạo (AI) và Vật lý tính toán (Heuristic):
+
+1.  Phân tích chiến lược (AI): Mô hình PPO nhìn vào bức tranh toàn cảnh (512 đặc trưng) để quyết định xem hành tinh nào nên tấn công và sử dụng bao nhiêu lực lượng. AI rất giỏi trong việc nhận diện các cơ hội chiến lược mà con người khó mô tả bằng luật.
+2.  Tính toán chính xác (Vật lý): Thay vì để AI tự học cách bắn trúng mục tiêu đang di chuyển (rất khó), Agent sử dụng các hàm toán học (`find_angle_to_moving_planet`) để tính toán góc đánh chặn chính xác dựa trên tốc độ hạm đội và quỹ đạo của mục tiêu.
+3.  An toàn tuyệt đối: Mọi đường bắn từ AI đều được kiểm tra lại bằng hàm `path_crosses_sun`. Nếu đường bay đi qua vùng nguy hiểm của Mặt trời, hành động đó sẽ bị hủy bỏ hoặc điều chỉnh.
+4.  Tận dụng Sao chổi (Comets): Agent ưu tiên chiếm sao chổi nếu chúng có sản lượng cao và vẫn còn đủ thời gian tồn tại trước khi biến mất.
+5. Ví dụ cụ thể về một lượt xử lý của Agent
+
+Giả sử Agent đang sở hữu Hành tinh A (tọa độ 20, 20) với 500 tàu. Mục tiêu là Hành tinh B (đang quay quanh Mặt trời).
+
+1.  Thu thập dữ liệu: Hàm `agent` nhận `obs`. `_parse_world` xác định vị trí hiện tại của A, B, và vận tốc góc của hệ thống.
+2.  Tạo Vector quan sát: Hàm `build_obs_vector` tính toán các đặc trưng tương đối. Ví dụ: Khoảng cách A-B, số tàu của B so với A, hành tinh B có phải sao chổi không... Tất cả tạo thành vector 512 số thực.
+3.  Hỏi ý kiến AI (PPO): Vector này được đưa vào `ppo_model.onnx`. Model trả về hai giá trị:
+       `angle_norm = 0.25` (tương ứng với góc khoảng 45 độ).
+       `ratio_norm = 0.2` (tương ứng với việc gửi đi khoảng 60% số quân).
+4.  Chọn mục tiêu: Hàm `_select_target_from_angle` quét các hành tinh xung quanh góc 45 độ và thấy Hành tinh B là mục tiêu tiềm năng nhất dựa trên điểm số (sản lượng cao, ít quân thủ).
+5.  Tính toán vật lý (Intercept): Vì Hành tinh B đang di chuyển trên quỹ đạo, hàm `find_angle_to_moving_planet` dự đoán sau khoảng 30 lượt nữa hạm đội mới tới nơi. Tại thời điểm đó, B sẽ di chuyển đến tọa độ (X', Y'). Góc bắn thực tế được điều chỉnh chính xác để nhắm vào (X', Y') thay vì vị trí hiện tại của B.
+6.  Kiểm tra an toàn: Hàm `path_crosses_sun` kiểm tra đường bắn từ A đến (X', Y'). Nếu đường này không cắt qua vùng nguy hiểm của Mặt trời, lệnh sẽ được thực thi.
+7.  Ra lệnh: Agent gửi lệnh bắn: `[ID_A, góc_đã_tính, 300_tàu]`.
+
+---
+
+ 6. PPO đã được ứng dụng như thế nào trong dự án này?
+
+Thuật toán PPO (Proximal Policy Optimization) đóng vai trò là "bộ não chiến lược" với các đặc điểm cụ thể:
+
+   Không gian hành động liên tục (Continuous Action Space): Trong Orbit Wars, góc bắn và tỉ lệ quân là các giá trị liên tục. PPO xử lý cực tốt loại dữ liệu này so với các thuật toán như DQN (chỉ xử lý hành động rời rạc).
+   Tính ổn định cao: Nhờ cơ chế Clipping, PPO đảm bảo rằng sau mỗi bước cập nhật, chiến thuật của Agent không thay đổi quá đột ngột. Điều này rất quan trọng trong môi trường game có tính chất vật lý thay đổi liên tục như Orbit Wars.
+   Xử lý đa mục tiêu: Vector quan sát 512 chiều cho phép PPO "nhìn" thấy cùng lúc 28 hành tinh và 20 hạm đội gần nhất. Nó học được các chiến thuật phức tạp như: "Khi đối thủ đang tấn công mình, hãy ưu tiên phản công vào hành tinh yếu nhất của họ" thay vì chỉ bắn bừa bãi.
+   Kiến trúc Actor-Critic:
+       Actor (Người hành động): Được xuất bản thành file `.onnx` để chạy nhẹ nhàng trên môi trường thi đấu. Nó chịu trách nhiệm quyết định "Làm gì?".
+       Critic (Người đánh giá): Chỉ dùng trong lúc huấn luyện để đánh giá xem hành động của Actor là tốt hay xấu (dựa trên phần thưởng nhận được). Sau khi huấn luyện xong, chúng ta chỉ giữ lại phần Actor.
+---
+
+ Phân tích chi tiết Agent AlphaZero v1 trong Orbit Wars
+
+ 7. Giải thích các hàm (def) trong agent_alphazero_v1.py
+
+ Cấu trúc dữ liệu MCTS (Monte Carlo Tree Search)
+   Action: Lưu trữ thông tin một hành động (hành tinh nguồn, hành tinh đích, số quân, điểm heuristic).
+   State: Đại diện cho trạng thái trò chơi tại một nút (chủ sở hữu, số quân, người chơi hiện tại).
+   Node: Một nút trong cây tìm kiếm MCTS, lưu trữ số lần ghé thăm (`visit_count`), tổng giá trị (`value_sum`), và các nút con.
+
+ Hệ thống Vật lý và Dự báo nâng cao
+   point_to_segment_distance / collides: Tính toán va chạm chính xác giữa đường bay và các vật thể tròn.
+   comet_collision: Kiểm tra va chạm riêng cho sao chổi với một biên độ an toàn (`COMET_MARGIN`).
+   simulate_comet_path / _build_comet_map: Mô phỏng toàn bộ lộ trình tương lai của sao chổi để lên kế hoạch đánh chặn.
+   find_angle_to_moving_planet: Thuật toán lặp để tìm góc bắn đón đầu các hành tinh đang di chuyển, đồng thời kiểm tra vật cản Mặt trời.
+
+ Xử lý Vector quan sát (Observation Vector)
+   _build_obs_vector: Tạo vector 512 chiều. Khác với PPO, AlphaZero tập trung nhiều hơn vào các đặc trưng chiến lược toàn cục và sự tập trung quân số (`ownership concentration`) để hỗ trợ việc tìm kiếm sâu.
+
+ Lõi tìm kiếm MCTS AlphaZero
+   _model_policy_value: Chạy mô hình `alphazero_model.onnx` để lấy xác suất tiên nghiệm (`Policy`) và giá trị dự đoán thắng lợi (`Value`).
+   _expand_node: Mở rộng một nút lá, sử dụng mô hình AI để gán giá trị khởi tạo cho các hành động.
+   _select_child: Chọn nút con tiếp theo dựa trên công thức PUCT (kết hợp giữa giá trị Q và độ ưu tiên P từ model AI).
+   mcts_search: Thực hiện chu trình: Chọn lọc -> Mở rộng -> Đánh giá -> Cập nhật ngược (Backpropagation).
+   _simulation_budget: Tính toán số lượng mô phỏng tối ưu dựa trên thời gian còn lại (`deadline`).
+
+ Chiến thuật và Hậu xử lý
+   _dangerous_comet_on_path: Kiểm tra xem trên đường bắn có sao chổi nào sắp đi ngang qua gây nguy hiểm cho hạm đội không.
+   _estimate_counter_threat: Ước tính các mối đe dọa phản công từ kẻ thù đối với mục tiêu mà mình sắp chiếm.
+   _selfplay_action_score / _selfplay_reorder_actions: Sử dụng các kỹ thuật từ "Self-play" để tái sắp xếp các hành động, ưu tiên những nước đi có lợi thế dài hạn thay vì chỉ nhìn vào điểm số tức thời.
+
+---
+
+ 8. Các trọng số và tham số chính của AlphaZero
+
+   MCTS_MAX_SIMULATIONS (42): Số lượng trận đấu giả lập tối đa trong mỗi lượt. Con số này thấp hơn so với AlphaZero truyền thống do giới hạn thời gian thực của game.
+   MCTS_MAX_DEPTH (6): Độ sâu tối đa mà cây tìm kiếm có thể vươn tới.
+   MCTS_C_PUCT (1.25): Tham số điều khiển sự cân bằng giữa Khai phá (Exploration) và Khai thác (Exploitation).
+   SOFT_DEADLINE (0.78): Thời gian tối đa cho phép để tính toán một lượt (giây).
+   SELFPLAY_RISK_WEIGHT (0.52): Trọng số đánh giá rủi ro bị phản công.
+
+---
+
+ 9. Quá trình huấn luyện AlphaZero
+
+Khác với PPO học từ phần thưởng tức thời, AlphaZero học thông qua Quá trình Tự chơi (Self-play):
+1.  Tự đấu: Agent phiên bản hiện tại tự chơi với chính nó.
+2.  MCTS làm Thầy: MCTS thực hiện tìm kiếm sâu để tìm ra nước đi tốt nhất. Kết quả tìm kiếm này (phân phối số lần ghé thăm nút con) được dùng làm "nhãn" để huấn luyện mạng thần kinh.
+3.  Huấn luyện mạng Policy (Chính sách): Mạng thần kinh học cách dự đoán nước đi mà MCTS đã chọn.
+4.  Huấn luyện mạng Value (Giá trị): Mạng thần kinh học cách dự đoán kết quả cuối cùng của trận đấu (thắng/thua) từ một trạng thái bất kỳ.
+5.  Lặp lại: Model mới tốt hơn sẽ thay thế model cũ và quá trình tự chơi tiếp tục để ngày càng mạnh hơn.
+
+---
+
+ 10. Cách chơi và Chiến thuật trong Orbit Wars
+
+Agent AlphaZero v1 thể hiện một lối chơi cực kỳ "tính toán" và "nhìn xa trông rộng":
+
+1.  Hybrid Control (Điều khiển lai): Ở giai đoạn đầu và giữa trận (dưới 300 bước), Agent ưu tiên sử dụng các quy tắc Heuristic mạnh để chiếm lĩnh tài nguyên nhanh chóng. Khi bước vào giai đoạn cuối trận, nó chuyển hẳn sang MCTS để thực hiện các nước đi mang tính quyết định.
+2.  Đánh giá rủi ro phản công: Trước khi bắn, AlphaZero tính toán xem nếu mình chiếm hành tinh đó, kẻ thù ở gần đó có thể phản công chiếm lại ngay lập tức không (`_estimate_counter_threat`). Nếu rủi ro quá cao, nó sẽ chọn mục tiêu khác an toàn hơn.
+3.  Dự báo va chạm phức tạp: Khác với các Agent thông thường chỉ tránh Mặt trời, AlphaZero tránh cả các sao chổi đang di chuyển trên đường bay của mình, giúp giảm thiểu tổn thất quân số vô lý.
+4.  Tối ưu hóa số quân (Takeover Need): Nó tính toán chính xác số quân cần thiết để chiếm hành tinh (có tính đến sự gia tăng quân số của địch trong lúc hạm đội đang bay) để không gửi thừa hoặc thiếu quân.
+ 11. Ví dụ cụ thể về một lượt xử lý của Agent AlphaZero
+
+Giả sử đang ở lượt thứ 350 (giai đoạn cuối trận), Agent sở hữu 3 hành tinh và đang đối đầu với một đối thủ mạnh.
+
+1.  Khởi tạo cây MCTS: Hàm `mcts_search` tạo nút gốc (`Node`) dựa trên trạng thái hiện tại.
+2.  Lựa chọn (Selection): Agent bắt đầu duyệt cây. Nó sử dụng công thức PUCT để chọn hành động. Nếu một hành động có vẻ hứa hẹn (giá trị Q cao) và chưa được khám phá nhiều (độ không chắc chắn cao), nó sẽ được ưu tiên.
+3.  Mở rộng và Đánh giá (Expansion & Evaluation): Khi tới một nút lá, hàm `_run_model` gửi vector quan sát đến `alphazero_model.onnx`. 
+       Mạng thần kinh trả về: "Xác suất chiếm hành tinh X là 70%, hành tinh Y là 20%, và giữ quân phòng thủ là 10%".
+       Đồng thời trả về: "Trạng thái này có 65% cơ hội dẫn đến chiến thắng cuối cùng".
+4.  Cập nhật ngược (Backpropagation): Giá trị 65% này được truyền ngược lên các nút cha, giúp các lượt chọn sau này thông minh hơn.
+5.  Lặp lại: Quy trình này lặp lại khoảng 42 lần trong vòng chưa đầy 1 giây.
+6.  Chọn nước đi cuối cùng: Sau khi hết thời gian, Agent chọn hành động có số lần ghé thăm (visit count) cao nhất tại nút gốc (thường là hành động ổn định nhất).
+7.  Kiểm tra thực địa: 
+       Giả sử nước đi là chiếm hành tinh X. Agent tính toán góc bắn đón đầu (`find_angle_to_moving_planet`).
+       Nó phát hiện có một sao chổi đang bay cắt ngang đường bắn (`_dangerous_comet_on_path`).
+       Agent sẽ hủy lệnh này hoặc chọn hành động tốt thứ hai từ cây MCTS để đảm bảo an toàn cho hạm đội.
+
+---
+
+ 12. AlphaZero đã được ứng dụng như thế nào trong dự án này?
+
+AlphaZero trong dự án này là một biến thể nâng cao, được tinh chỉnh cho môi trường thời gian thực:
+
+   Rời rạc hóa hành động (Action Discretization): AlphaZero gốc thường chơi các game bàn cờ với nước đi rời rạc. Trong Orbit Wars (vốn là môi trường liên tục), dự án này đã khôn ngoan tạo ra một danh sách các "ứng viên hành động" (`_generate_actions`) bao gồm các cặp [Nguồn - Đích - Tỉ lệ quân] để MCTS có thể tìm kiếm hiệu quả.
+   Tìm kiếm có hướng (Guided Search): Thay vì tìm kiếm ngẫu nhiên, MCTS được mạng thần kinh "chỉ đường" thông qua các xác suất tiên nghiệm. Điều này giúp Agent tìm ra nước đi tốt chỉ với 42 lượt giả lập, thay vì hàng ngàn lượt như các thuật toán MCTS thuần túy.
+   Đánh giá trạng thái dài hạn: Khác với Heuristic chỉ nhìn vào số quân hiện tại, mạng thần kinh Value của AlphaZero có thể nhận ra các yếu tố trừu tượng như "vị trí chiến lược" hay "tiềm năng phát triển quân" để đánh giá một trạng thái là tốt hay xấu.
+   Cơ chế Tự chơi (Self-play) để tiến hóa: Mô hình AI được huấn luyện bằng cách cho các phiên bản Agent tự đấu với nhau. MCTS đóng vai trò là "bộ lọc" giúp Agent nhận ra những sai lầm trong quá khứ và học được các chiến thuật phản công phức tạp (`_estimate_counter_threat`).
+   Sự kết hợp giữa Suy luận và Cảm nhận: 
+       Mạng thần kinh: Đóng vai trò "trực giác", cảm nhận xem nước đi nào là tốt.
+       MCTS: Đóng vai trò "suy luận", tính toán kỹ các bước tiếp theo của đối thủ.
+       Vật lý Heuristic: Đóng vai trò "kỹ năng thực thi", đảm bảo viên đạn bay trúng đích và tránh mọi vật cản.
+

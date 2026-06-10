@@ -1084,10 +1084,10 @@ def _strong_fallback(obs, config, world=None, deadline=None):
 
     # First, try external strong policies if packaged.
     for name, fn in (
+        ("rule_base_v2", _rule_base_v2_agent),
         ("rule_base_v1", _rule_base_v1_agent),
         ("rule_base_v4", _rule_base_v4_agent),
         ("rule_base_v3", _rule_base_v3_agent),
-        ("rule_base_v2", _rule_base_v2_agent),
     ):
         if fn is None:
             continue
